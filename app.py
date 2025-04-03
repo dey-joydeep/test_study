@@ -13,6 +13,7 @@ import requests
 # API keys
 openai.api_key = "openai"
 DEEPSEEK_API_KEY = "deepseek"  # Replace with your DeepSeek API key
+QWEN_API_KEY = "qwen"  # Replace with your Qwen API key
 
 ###医学知識###
 # 症状リスト
@@ -588,7 +589,37 @@ def chat_to_deepseek_temperature_0(prompt):
         st.error(f"DeepSeek APIへの接続に失敗しました: {str(e)}\nAPIキーを確認してください。")
         return None
 
-# Modify the existing functions to use either GPT-4 or DeepSeek based on a parameter
+def chat_to_qwen(prompt):
+    url = "https://api.qwen.ai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {st.session_state.get('qwen_api_key', QWEN_API_KEY)}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "qwen-32b",
+        "messages": [
+            {"role": "system", "content": "You are a great assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0,
+        "top_p": 0.5
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 401:
+            st.error("Qwen APIキーが無効です。サイドバーから正しいAPIキーを入力してください。")
+            return None
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except requests.exceptions.RequestException as e:
+        st.error(f"Qwen APIへの接続に失敗しました: {str(e)}\nAPIキーを確認してください。")
+        return None
+
+def chat_to_qwen_temperature_0(prompt):
+    return chat_to_qwen(prompt)  # Qwen doesn't need separate temperature function as it's handled in the main function
+
+# Modify the existing functions to use either GPT-4, DeepSeek, or Qwen based on a parameter
 def chat_with_model(prompt, model="gpt4", temperature=0):
     try:
         if model == "gpt4":
@@ -599,6 +630,10 @@ def chat_with_model(prompt, model="gpt4", temperature=0):
             if temperature == 0:
                 return chat_to_deepseek_temperature_0(prompt)
             return chat_to_deepseek(prompt)
+        elif model == "qwen":
+            if temperature == 0:
+                return chat_to_qwen_temperature_0(prompt)
+            return chat_to_qwen(prompt)
         else:
             raise ValueError(f"Unsupported model: {model}")
     except Exception as e:
@@ -843,7 +878,8 @@ def main():
     if "api_keys" not in st.session_state:
         st.session_state["api_keys"] = {
             "openai": "",
-            "deepseek": ""
+            "deepseek": "",
+            "qwen": ""
         }
 
     # サイドバーにモデル設定を配置
@@ -859,7 +895,7 @@ def main():
         # モデル選択（ドロップダウンリスト）
         model_choice = st.selectbox(
             "利用するAIモデルを選択してください",
-            ["GPT-4", "DeepSeek"],
+            ["GPT-4", "DeepSeek", "Qwen-32B"],
             index=0
         )
         
@@ -870,28 +906,37 @@ def main():
                 type="password",
                 value=st.session_state["api_keys"]["openai"]
             )
-        else:
+        elif model_choice == "DeepSeek":
             api_key = st.text_input(
                 "DeepSeek APIキー",
                 type="password",
                 value=st.session_state["api_keys"]["deepseek"]
             )
+        else:  # Qwen-32B
+            api_key = st.text_input(
+                "Qwen APIキー",
+                type="password",
+                value=st.session_state["api_keys"].get("qwen", "")
+            )
         
         if st.button("設定を保存して開始"):
             if api_key:
                 # モデルとAPIキーを保存
-                st.session_state["selected_model"] = "gpt4" if model_choice == "GPT-4" else "deepseek"
+                st.session_state["selected_model"] = "gpt4" if model_choice == "GPT-4" else ("deepseek" if model_choice == "DeepSeek" else "qwen")
                 
                 # APIキーを保存
                 if model_choice == "GPT-4":
                     st.session_state["api_keys"]["openai"] = api_key
                     openai.api_key = api_key
-                else:
+                elif model_choice == "DeepSeek":
                     st.session_state["api_keys"]["deepseek"] = api_key
                     global DEEPSEEK_API_KEY
                     DEEPSEEK_API_KEY = api_key
                     # セッションステートにも保存
                     st.session_state["deepseek_api_key"] = api_key
+                else:  # Qwen-32B
+                    st.session_state["api_keys"]["qwen"] = api_key
+                    st.session_state["qwen_api_key"] = api_key
                 
                 st.session_state.step = 1
                 st.rerun()
@@ -906,7 +951,8 @@ def main():
             st.session_state["selected_model"] = None
             st.session_state["api_keys"] = {
                 "openai": "",
-                "deepseek": ""
+                "deepseek": "",
+                "qwen": ""
             }
             st.rerun()
 
@@ -918,7 +964,7 @@ def main():
     elif st.session_state.step == 1:
         # まだ最初のアシスタントメッセージがなければ登録
         if "assistants_first_comment" not in st.session_state:
-            model_name = "GPT-4" if st.session_state["selected_model"] == "gpt4" else "DeepSeek"
+            model_name = "GPT-4" if st.session_state["selected_model"] == "gpt4" else ("DeepSeek" if st.session_state["selected_model"] == "deepseek" else "Qwen-32B")
             st.session_state["assistants_first_comment"] = f"私は{model_name}を使用した正確な問診をするAIです。\n今日はどうされましたか？お困りのことを10-100文字程度で教えてください。"
             st.session_state["messages"].append({
                 "role": "assistant",
@@ -961,45 +1007,56 @@ def main():
             # ---------------------------------------------------
             st.session_state["patients_first_comment"] = user_input
 
-            # 次のアシスタントメッセージを追加
+            # 即座に確認メッセージを表示
             assistant_text = (
                 "ありがとうございます。\n"
                 "次に、記載された症状について追加で質問をさせていただきます。\n"
                 "少しお待ちください。"
             )
+            
+            # 確認メッセージを即座に表示
+            with st.chat_message("assistant"):
+                st.write(assistant_text)
+            
+            # 表示後にメッセージを追加
             st.session_state["messages"].append({
                 "role": "assistant",
                 "content": assistant_text,
-                "typed": False
+                "typed": True
             })
 
-            # case_dict, symptom_dictionary を生成
-            result = make_question_and_dictionary(
-                patients_comment=user_input,
-                columns_dictionary=columns_dictionary_1
-            )
-            
-            if result is None:
-                st.error("症状の分析に失敗しました。APIキーを確認してください。")
-                return
+            # バックグラウンドで応答を処理
+            with st.spinner("症状を分析中..."):
+                # case_dict, symptom_dictionary を生成
+                result = make_question_and_dictionary(
+                    patients_comment=user_input,
+                    columns_dictionary=columns_dictionary_1
+                )
                 
-            case_dict, symptom_dictionary = result
-            st.session_state["case_dict"] = case_dict
-            st.session_state["symptom_dictionary"] = symptom_dictionary
+                if result is None:
+                    st.error("症状の分析に失敗しました。APIキーを確認してください。")
+                    return
+                    
+                case_dict, symptom_dictionary = result
+                st.session_state["case_dict"] = case_dict
+                st.session_state["symptom_dictionary"] = symptom_dictionary
 
-            # 問診票を作成
-            if case_dict:
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": f"あなたの発言をもとに問診票を作成しました。\n{json.dumps(case_dict, ensure_ascii=False, indent=2)}"
-                })
-            else:
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": "症状の分析が完了しました。次の質問に進みましょう。"
-                })
+                # 未回答の質問を取得
+                unanswered = [q for q, a in case_dict.items() if a == "0"]
+                if unanswered:
+                    st.session_state["current_question"] = unanswered[0]
+                    st.session_state["messages"].append({
+                        "role": "assistant",
+                        "content": st.session_state["current_question"],
+                        "typed": False
+                    })
+                else:
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": "症状の分析が完了しました。次の質問に進みましょう。"
+                    })
 
-            # 次へ
+            # 処理完了後にstep 2へ移行
             st.session_state.step = 2
             st.rerun()
         elif st.session_state.step == 2:
@@ -1008,7 +1065,61 @@ def main():
                 st.error("問診データの取得に失敗しました。最初からやり直してください。")
                 st.session_state.step = 0
                 st.rerun()
-                return
+            
+            # まだ表示中の質問がなければ、次の質問を取り出して表示する
+            if "current_question" not in st.session_state or st.session_state["current_question"] is None:
+                unanswered = [q for q, a in case_dict.items() if a == "0"]
+                if not unanswered:
+                    # 全部回答済みならstep4へ
+                    st.session_state.step = 4
+                    st.rerun()
+                else:
+                    # 先頭を current_question にセット
+                    st.session_state["current_question"] = unanswered[0]
+                    # 表示用メッセージを追加
+                    st.session_state["messages"].append({
+                        "role": "assistant",
+                        "content": st.session_state["current_question"],
+                        "typed": False
+                    })
+                    st.rerun()
+            else:
+                # current_question が既にある状態 → ユーザー入力があればそれを回答としてセット
+                if user_input:
+                    # ユーザー入力を、現在の質問の回答として格納
+                    question_to_answer = st.session_state["current_question"]
+                    case_dict[question_to_answer] = user_input
+                    st.session_state["case_dict"] = case_dict
+
+                    # 次の質問があるかチェック
+                    unanswered = [q for q, a in case_dict.items() if a == "0"]
+                    if not unanswered:
+                        # 全部回答済みならstep4へ
+                        done_text = "ご回答ありがとうございます。\n回答内容をまとめますのでお待ちください。"
+                        st.session_state["messages"].append({
+                            "role": "assistant",
+                            "content": done_text,
+                            "typed": False
+                        })
+                        st.session_state.step = 4
+                        # current_question を None にしておく
+                        st.session_state["current_question"] = None
+                    else:
+                        # まだ未回答がある → 次の質問を表示
+                        st.session_state["current_question"] = unanswered[0]
+                        st.session_state["messages"].append({
+                            "role": "assistant",
+                            "content": st.session_state["current_question"],
+                            "typed": False
+                        })
+                    st.rerun()
+
+        elif st.session_state.step == 4:
+            case_dict = st.session_state.get("case_dict")
+            if case_dict is None:
+                st.error("問診データの取得に失敗しました。最初からやり直してください。")
+                st.session_state.step = 0
+                st.rerun()
             
             # まだ表示中の質問がなければ、次の質問を取り出して表示する
             if "current_question" not in st.session_state or st.session_state["current_question"] is None:
